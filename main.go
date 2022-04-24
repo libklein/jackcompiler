@@ -56,12 +56,6 @@ func main() {
 		files = []string{fileOrDir}
 	}
 
-	// Open file for writing
-	//output, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	//if err != nil {
-	//	fmt.Printf("Could not generate assembly file %q: %v\n", outputPath, err)
-	//}
-
 	for _, file := range files {
 		if filepath.Ext(file) != ".jack" {
 			continue
@@ -74,11 +68,11 @@ func main() {
 			return
 		}
 
-		dumpTokens(handle)
-		handle.Seek(0, 0)
+		//dumpTokens(handle)
+		//handle.Seek(0, 0)
 
 		// Translate
-		vmCode, err := compileFile(getClassName(file), handle)
+		code, err := compileFile(getClassName(file), handle)
 		if err != nil {
 			fmt.Printf("Failed to compile file %q: %v\n", file, err)
 		}
@@ -86,13 +80,19 @@ func main() {
 		// Close read file
 		handle.Close()
 
-		// Write assembly
-		for _, line := range vmCode {
-			fmt.Println(line)
-			// output.WriteString(line + "\n")
+		// Open file for writing
+		outputPath := file[:len(file)-5] + ".xml"
+		output, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			fmt.Printf("Could not generate assembly file %q: %v\n", outputPath, err)
 		}
-	}
 
-	// Close output
-	//output.Close()
+		// Write assembly
+		for _, line := range code {
+			output.WriteString(line + "\n")
+		}
+
+		// Close output
+		output.Close()
+	}
 }
