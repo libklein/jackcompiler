@@ -12,7 +12,7 @@ type TokenType string
 const (
 	InvalidToken    TokenType = ""
 	Keyword         TokenType = "keyword"
-	Symbol          TokenType = "symbol"
+	SymbolTokenType TokenType = "symbol"
 	IntegerConstant TokenType = "integerConstant"
 	StringConstant  TokenType = "stringConstant"
 	Identifier      TokenType = "identifier"

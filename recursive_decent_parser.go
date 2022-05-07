@@ -5,15 +5,58 @@ import (
 	"strings"
 )
 
+var (
+	symbolTable  SymbolTable = NewSymbolTable()
+	lastVarTypes []string
+	lastVarKind  SymbolType
+	lastVarNames []string
+)
+
+func resetCapture() {
+	lastVarTypes = []string{}
+	lastVarKind = InvalidSymbol
+	lastVarNames = []string{}
+}
+
+func declareSymbols(scope Scope) {
+	if lastVarKind == InvalidSymbol {
+		fmt.Println("Tried to parse invalid symbol!")
+	}
+	if len(lastVarTypes) != len(lastVarNames) && len(lastVarTypes) != 1 {
+		fmt.Printf("Tried to parse uneq amount of vars and symbols: %v %v\n", lastVarTypes, lastVarNames)
+	}
+	for i := 0; i < len(lastVarNames); i++ {
+		lastType := lastVarTypes[0]
+		if i < len(lastVarTypes) {
+			lastType = lastVarTypes[i]
+		}
+		lastName := lastVarNames[i]
+		symbol := symbolTable.Declare(Symbol{symbolType: lastVarKind, variableType: lastType}, lastName, scope)
+		fmt.Printf("Declared symbol %q: %v\n", lastName, symbol)
+	}
+}
+
+/*
+* TODO
+* Clear table on subroutine entry: DONE
+* Declare variables: DONE
+* Lookup variables
+*
+* Problem: When im parsing a variable declaration, i have no way of knowing what the identifier, type, etc is
+*
+ */
+
 type TokenScanner interface {
 	Token() Token
 	Err() error
 	Scan() bool
 }
 
-func CompileCode(t TokenScanner) ([]string, error) {
+func CompileCode(t TokenScanner) (code []string, err error) {
+	resetCapture()
 	t.Scan()
-	return compileClass(t)
+	code, err = compileClass(t)
+	return
 }
 
 type CompilationFunction func(TokenScanner) ([]string, error)
@@ -36,7 +79,6 @@ func chain(funcs ...CompilationFunction) CompilationFunction {
 
 func maybe(f CompilationFunction) CompilationFunction {
 	return func(t TokenScanner) ([]string, error) {
-		fmt.Println("\tCompiling maybe...")
 		code, err := f(t)
 		if err != nil {
 			return []string{}, nil
@@ -47,7 +89,6 @@ func maybe(f CompilationFunction) CompilationFunction {
 
 func greedy(f CompilationFunction) CompilationFunction {
 	return func(t TokenScanner) ([]string, error) {
-		fmt.Println("\tCompiling greedily...")
 		code := []string{}
 		for {
 			nextCode, err := f(t)
@@ -85,19 +126,16 @@ func compileTerminal(tokenStream TokenScanner, expectation string) (token Token,
 
 func newTerminalCompiler(terminal string) CompilationFunction {
 	return func(t TokenScanner) ([]string, error) {
-		fmt.Printf("\t\tExpecting terminal %q\n", terminal)
 		token, err := compileTerminal(t, terminal)
 		if err == nil {
-			fmt.Printf("\tGot terminal %q\n", terminal)
 			return []string{formatXML(string(token.tokenType), token.terminal)}, nil
 		}
-		fmt.Printf("\t\t\tError: %v\n", err)
 		return []string{}, err
 	}
 }
 
 func compileClass(tokenStream TokenScanner) (code []string, err error) {
-	fmt.Printf("Compiling class\n")
+	symbolTable.Clear(ClassScope)
 	childCode, childErr := chain(
 		newTerminalCompiler("class"),
 		compileClassName,
@@ -119,8 +157,10 @@ func compileClass(tokenStream TokenScanner) (code []string, err error) {
 }
 
 func compileClassVarDec(tokenStream TokenScanner) (code []string, err error) {
-	fmt.Printf("Compiling class var declaration\n")
+	fmt.Println("<ClassVarDec>")
+	resetCapture()
 
+	lastVarKind = SymbolType(tokenStream.Token().terminal)
 	childCode, childErr := chain(
 		or(
 			newTerminalCompiler("static"),
@@ -137,6 +177,9 @@ func compileClassVarDec(tokenStream TokenScanner) (code []string, err error) {
 		newTerminalCompiler(";"),
 	)(tokenStream)
 
+	// Declare all variables found
+	declareSymbols(ClassScope)
+
 	if childErr != nil {
 		err = childErr
 	} else {
@@ -148,18 +191,21 @@ func compileClassVarDec(tokenStream TokenScanner) (code []string, err error) {
 	return
 }
 
-func compileType(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling type\n")
-	return or(
+func compileType(tokenStream TokenScanner) (code []string, err error) {
+	lastVarTypes = append(lastVarTypes, tokenStream.Token().terminal)
+	if code, err = or(
 		newTerminalCompiler("int"),
 		newTerminalCompiler("char"),
 		newTerminalCompiler("boolean"),
 		compileClassName,
-	)(tokenStream)
+	)(tokenStream); err != nil {
+		// Remove captured type
+		lastVarTypes = lastVarTypes[:len(lastVarTypes)-1]
+	}
+	return
 }
 
 func compileClassSubroutineDec(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling subroutine dec\n")
 	childCode, childErr := chain(
 		or(
 			newTerminalCompiler("constructor"),
@@ -187,7 +233,9 @@ func compileClassSubroutineDec(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileParameterList(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling param list\n")
+	fmt.Println("<ParameterList>")
+	resetCapture()
+
 	childCode, childErr := maybe(
 		chain(
 			compileType,
@@ -202,6 +250,13 @@ func compileParameterList(tokenStream TokenScanner) ([]string, error) {
 		),
 	)(tokenStream)
 
+	// Declare arguments
+	if lastVarKind != InvalidSymbol {
+		fmt.Println("Uncleared var type", lastVarKind)
+	}
+	lastVarKind = ArgumentSymbol
+	declareSymbols(FunctionScope)
+
 	if childErr != nil {
 		return []string{}, childErr
 	}
@@ -212,7 +267,7 @@ func compileParameterList(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileSubroutineBody(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling subroutine body\n")
+	symbolTable.Clear(FunctionScope)
 	childCode, childErr := chain(
 		newTerminalCompiler("{"),
 		greedy(
@@ -232,7 +287,9 @@ func compileSubroutineBody(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileVarDec(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling class var declaration\n")
+	fmt.Println("<VarDec>")
+	resetCapture()
+
 	childCode, childErr := chain(
 		newTerminalCompiler("var"),
 		compileType,
@@ -245,6 +302,13 @@ func compileVarDec(tokenStream TokenScanner) ([]string, error) {
 		),
 		newTerminalCompiler(";"),
 	)(tokenStream)
+
+	// Declare var
+	if lastVarKind != InvalidSymbol {
+		fmt.Println("Uncleared var type", lastVarKind)
+	}
+	lastVarKind = VarSymbol
+	declareSymbols(FunctionScope)
 
 	if childErr != nil {
 		return []string{}, childErr
@@ -263,7 +327,6 @@ func compileIdentifier(tokenStream TokenScanner) ([]string, error) {
 	if !tokenStream.Scan() && tokenStream.Err() != nil {
 		return nil, fmt.Errorf("error receiving next token: %q", tokenStream.Err())
 	}
-	fmt.Printf("\tGot identifier %q\n", token.terminal)
 	return []string{formatXML("identifier", token.terminal)}, nil
 }
 
@@ -275,12 +338,15 @@ func compileSubroutineName(tokenStream TokenScanner) ([]string, error) {
 	return compileIdentifier(tokenStream)
 }
 
-func compileVarName(tokenStream TokenScanner) ([]string, error) {
-	return compileIdentifier(tokenStream)
+func compileVarName(tokenStream TokenScanner) (code []string, err error) {
+	lastVarNames = append(lastVarNames, tokenStream.Token().terminal)
+	if code, err = compileIdentifier(tokenStream); err != nil {
+		lastVarNames = lastVarNames[:len(lastVarNames)-1]
+	}
+	return
 }
 
 func compileStatements(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling statements\n")
 	childCode, childErr := greedy(
 		compileStatement,
 	)(tokenStream)
@@ -295,7 +361,6 @@ func compileStatements(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileStatement(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling statement\n")
 	childCode, childErr := or(
 		compileLetStatement,
 		compileIfStatement,
@@ -312,7 +377,6 @@ func compileStatement(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileLetStatement(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling lets statement\n")
 	childCode, childErr := chain(
 		newTerminalCompiler("let"),
 		compileVarName,
@@ -338,7 +402,6 @@ func compileLetStatement(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileIfStatement(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling if statement\n")
 	childCode, childErr := chain(
 		newTerminalCompiler("if"),
 		newTerminalCompiler("("),
@@ -367,7 +430,6 @@ func compileIfStatement(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileWhileStatement(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling while statement\n")
 	childCode, childErr := chain(
 		newTerminalCompiler("while"),
 		newTerminalCompiler("("),
@@ -388,7 +450,6 @@ func compileWhileStatement(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileDoStatement(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling do statement\n")
 	childCode, childErr := chain(
 		newTerminalCompiler("do"),
 		compileSubroutineCall,
@@ -405,7 +466,6 @@ func compileDoStatement(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileReturnStatement(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling return statement\n")
 	childCode, childErr := chain(
 		newTerminalCompiler("return"),
 		maybe(compileExpression),
@@ -422,7 +482,6 @@ func compileReturnStatement(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileExpression(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling expression\n")
 	childCode, childErr := chain(
 		compileTerm,
 		greedy(
@@ -443,7 +502,6 @@ func compileExpression(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileVarNameSubterm(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling subterm\n")
 	// Parse var name
 	varNameCode, err := compileVarName(tokenStream)
 	if err != nil {
@@ -451,8 +509,6 @@ func compileVarNameSubterm(tokenStream TokenScanner) ([]string, error) {
 	}
 
 	var subtokenCode []string
-
-	fmt.Printf("\t\t\tToken: %v", tokenStream.Token())
 
 	switch tokenStream.Token().terminal {
 	case "[":
@@ -468,7 +524,6 @@ func compileVarNameSubterm(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileTerm(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling term\n")
 	childCode, childErr := or(
 		compileIntegerConstant,
 		compileStringConstant,
@@ -496,7 +551,6 @@ func compileTerm(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileCall(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling call\n")
 	return or(
 		chain(
 			newTerminalCompiler("("),
@@ -514,7 +568,6 @@ func compileCall(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileSubroutineCall(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling subroutine call\n")
 	return chain(
 		or(
 			compileSubroutineName,
@@ -525,7 +578,6 @@ func compileSubroutineCall(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileExpressionList(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling expression list\n")
 	childCode, childErr := maybe(
 		chain(
 			compileExpression,
@@ -548,7 +600,6 @@ func compileExpressionList(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileOp(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling op\n")
 	return or(
 		newTerminalCompiler("+"),
 		newTerminalCompiler("-"),
@@ -563,7 +614,6 @@ func compileOp(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileUnaryOp(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling unary op\n")
 	return or(
 		newTerminalCompiler("-"),
 		newTerminalCompiler("~"),
@@ -571,7 +621,6 @@ func compileUnaryOp(tokenStream TokenScanner) ([]string, error) {
 }
 
 func compileKeywordConstant(tokenStream TokenScanner) ([]string, error) {
-	fmt.Printf("Compiling kw\n")
 	return or(
 		newTerminalCompiler("true"),
 		newTerminalCompiler("false"),
@@ -588,7 +637,6 @@ func compileIntegerConstant(tokenStream TokenScanner) ([]string, error) {
 	if !tokenStream.Scan() && tokenStream.Err() != nil {
 		return nil, fmt.Errorf("error receiving next token: %q", tokenStream.Err())
 	}
-	fmt.Printf("\tGot integer %d\n", token.asInt())
 	return []string{formatXML("integerConstant", token.terminal)}, nil
 }
 
@@ -600,7 +648,6 @@ func compileStringConstant(tokenStream TokenScanner) ([]string, error) {
 	if !tokenStream.Scan() && tokenStream.Err() != nil {
 		return nil, fmt.Errorf("error receiving next token: %q", tokenStream.Err())
 	}
-	fmt.Printf("\tGot string %s\n", token.terminal)
 	return []string{formatXML("stringConstant", token.terminal)}, nil
 }
 

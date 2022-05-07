@@ -22,7 +22,7 @@ var (
 
 	regexTokenTypeMapping = map[*regexp.Regexp]TokenType{
 		keywordRegex:         Keyword,
-		symbolRegex:          Symbol,
+		symbolRegex:          SymbolTokenType,
 		integerConstantRegex: IntegerConstant,
 		stringConstantRegex:  StringConstant,
 		identifierRegex:      Identifier,
@@ -202,7 +202,7 @@ func parseToken(tokenString string) (token Token, err error) {
 	case 0:
 		token.tokenType = Keyword
 	case 1:
-		token.tokenType = Symbol
+		token.tokenType = SymbolTokenType
 	case 2:
 		token.tokenType = IntegerConstant
 	case 3:
