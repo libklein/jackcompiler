@@ -20,10 +20,12 @@ func dumpTokens(r io.Reader) {
 	}
 }
 
-func compileFile(functionName string, r io.Reader) ([]string, error) {
+func compileFile(r io.Reader, w io.Writer) {
 	tokenizer := NewTokenizer(r)
+	writer := NewVMWriter(w)
 
-	return CompileCode(&tokenizer)
+	compiler := NewJackCompiler(&tokenizer, &writer)
+	compiler.Compile()
 }
 
 func main() {
@@ -67,32 +69,25 @@ func main() {
 			fmt.Printf("Could not open file %q: %v\n", file, err)
 			return
 		}
+		// TODO
+		//defer handle.Close()
 
 		//dumpTokens(handle)
 		//handle.Seek(0, 0)
 
-		// Translate
-		code, err := compileFile(getClassName(file), handle)
-		if err != nil {
-			fmt.Printf("Failed to compile file %q: %v\n", file, err)
-		}
-
-		// Close read file
-		handle.Close()
-
 		// Open file for writing
-		outputPath := file[:len(file)-5] + ".xml"
+		outputPath := file[:len(file)-5] + ".vm"
 		output, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			fmt.Printf("Could not generate assembly file %q: %v\n", outputPath, err)
 		}
+		// TODO
+		//defer output.Close()
 
-		// Write assembly
-		for _, line := range code {
-			output.WriteString(line + "\n")
-		}
-
-		// Close output
-		output.Close()
+		// Translate
+		compileFile(handle, output)
+		/*if err != nil {
+			fmt.Printf("Failed to compile file %q: %v\n", file, err)
+		}*/
 	}
 }
