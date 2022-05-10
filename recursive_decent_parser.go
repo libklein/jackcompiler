@@ -13,16 +13,6 @@ var (
 	lastVarNames []string
 )
 
-/*
-* TODO
-* Clear table on subroutine entry: DONE
-* Declare variables: DONE
-* Lookup variables
-*
-* Problem: When im parsing a variable declaration, i have no way of knowing what the identifier, type, etc is
-*
- */
-
 type TokenScanner interface {
 	Token() Token
 	Err() error
@@ -87,6 +77,18 @@ func (c *JackCompiler) generateVariableAccess(varName string) (VMSegmentType, Ma
 	default:
 		panic(fmt.Sprintf("Unknown symbolType: %q\n", symbol.symbolType))
 	}
+}
+
+func (c *JackCompiler) generateArrayElemPointer(name string) {
+	// Stores offset on top of stack
+	c.compileExpression()
+
+	// Emit code that moves the that pointer
+	// Store base addr on stack
+	segment, index := c.generateVariableAccess(name)
+	c.output.WritePush(segment, index)
+	// Add together
+	c.output.WriteArithmetic(AddVMOperation)
 }
 
 func (c *JackCompiler) nextToken() Token {
@@ -184,11 +186,27 @@ func (c *JackCompiler) compileVarSequence(symbolType SymbolType) (numDeclaration
 func (c *JackCompiler) compileSubroutineDec() error {
 	c.symbolTable.Clear(FunctionScope)
 
+	isMethod := false
 	switch token := c.nextToken(); {
 	case IsTerminal(token, "function"):
-
+		// Nothing to do.
 	case IsTerminal(token, "constructor"):
+		// Get count of field variables
+		nfields := c.symbolTable.Count(FieldSymbol, ClassScope)
+		// Allocate this pointer
+		c.output.WritePush(ConstVMSegment, nfields)
+		c.output.WriteCall("Memory.alloc", 1)
+		// Set THIS pointer
+		c.output.WritePop(PointerVMSegment, 0)
 	case IsTerminal(token, "method"):
+		isMethod = true
+		// Method will get an extra argument not captured in the parameter list.
+		thisSymbol := Symbol{
+			symbolType:   ArgumentSymbol,
+			variableType: c.currentClassName,
+		}
+
+		c.symbolTable.Declare(thisSymbol, "this", FunctionScope)
 	default:
 		return fmt.Errorf("Expected \"method\", \"constructor\" or \"function\" but got %s", c.nextToken().terminal)
 	}
@@ -206,12 +224,12 @@ func (c *JackCompiler) compileSubroutineDec() error {
 
 	c.consume(")")
 
-	c.compileSubroutine(name)
+	c.compileSubroutine(name, isMethod)
 
 	return nil
 }
 
-func (c *JackCompiler) compileSubroutine(name string) {
+func (c *JackCompiler) compileSubroutine(name string, isMethod bool) {
 	c.consume("{")
 	nlocals := MachineWord(0)
 	for {
@@ -223,6 +241,11 @@ func (c *JackCompiler) compileSubroutine(name string) {
 	}
 
 	c.writeFunction(name, nlocals)
+	// Setup this pointer if is method. We could also look up "this" in the symbol table instead
+	if isMethod {
+		c.output.WritePush(ArgumentVMSegment, 0)
+		c.output.WritePop(PointerVMSegment, 0)
+	}
 
 	c.compileStatements()
 	c.consume("}")
@@ -275,24 +298,6 @@ func (c *JackCompiler) compileStatements() {
 	}
 }
 
-func (c *JackCompiler) compileArrayAccess(name string) {
-	c.consume("[")
-	// Stores offset on top of stack
-	c.compileExpression()
-	c.consume("]")
-
-	// Emit code that moves the that pointer
-	// Store base addr on stack
-	segment, index := c.generateVariableAccess(name)
-	c.output.WritePush(segment, index)
-	// Add together
-	c.output.WriteArithmetic(AddVMOperation)
-	// Pop into pointer (THAT)
-	c.output.WritePop(PointerVMSegment, 1)
-	// Pop value onto stack
-	c.output.WritePop(ThatVMSegment, 0)
-}
-
 func (c *JackCompiler) compileDo() {
 	c.consume("do")
 	c.compileSubroutineCall("")
@@ -305,23 +310,37 @@ func (c *JackCompiler) compileDo() {
 
 func (c *JackCompiler) compileLet() {
 	varName := c.advance().terminal
+	// Where to store the result of the RHS expression
+	isArrayAccess := false
 
+	// Evaluate destination address if LHS is an array
 	if IsTerminal(c.advance(), "[") {
-		// TODO Array access
-		panic("Array let not implemented")
+		isArrayAccess = true
 		c.consume("[")
-		c.compileExpression()
+		c.generateArrayElemPointer(varName)
+		// Adress *varName + expr_result is not on top of stack
 		c.consume("]")
-		c.compileArrayAccess(varName)
 	}
+
+	// Handle RHS
 	c.consume("=")
 	c.compileExpression()
 	c.consume(";")
 	// Layout: Value of expression is on top of stack.
 	//		   -> Pop last value into var Name
-	// TODO Array access
-	segment, index := c.generateVariableAccess(varName)
-	c.output.WritePop(segment, index)
+	if isArrayAccess {
+		// Save result of RHS expression in temp
+		c.output.WritePop(TempVMSegment, 0)
+		// Pop array element address into pointer (THAT)
+		c.output.WritePop(PointerVMSegment, 1)
+		// Restore rhs rexpression result from temp
+		c.output.WritePush(TempVMSegment, 0)
+		// Push into destination
+		c.output.WritePush(ThatVMSegment, 0)
+	} else {
+		segment, index := c.generateVariableAccess(varName)
+		c.output.WritePop(segment, index)
+	}
 }
 
 func (c *JackCompiler) compileWhile() {
@@ -417,6 +436,15 @@ func (c *JackCompiler) compileExpressionList() (i MachineWord) {
 }
 
 func (c *JackCompiler) compileSubroutineCall(name string) {
+	/**
+	* Examples:
+	*	- do Memory.init();
+	*		 ^ name ^ method name
+	*	- do square.dispose();
+	*		 ^ name ^ method name
+	 */
+
+	// Try to determine variable/function name if not given
 	if name == "" {
 		var err error
 		name, err = parseIdentifier(c.nextToken())
@@ -428,21 +456,39 @@ func (c *JackCompiler) compileSubroutineCall(name string) {
 
 	switch c.nextToken().terminal {
 	case ".":
-		// TODO Check if name is a symbol! If it is, move this pointer accordingly
 		c.consume(".")
 		methodName, err := parseIdentifier(c.nextToken())
 		if err != nil {
 			panic(err)
 		}
-		name = name + "." + methodName
 		// Advance over identifier
 		c.advance()
-		fallthrough
-	case "(":
+
 		c.consume("(")
 		nargs := c.compileExpressionList()
-		c.output.WriteCall(name, nargs)
 		c.consume(")")
+
+		// Check if name is a symbol! If it is, push the object on the stack
+		if _, err := c.symbolTable.Lookup(name); err == nil {
+			nargs += 1 // Account for this pointer
+
+			// Push the address of the object a method is called on onto the stack.
+			// This will be argument 0 (this pointer)
+			segment, index := c.generateVariableAccess(name)
+			c.output.WritePush(segment, index)
+		} else {
+			// Name refers to some function. Needs to be fully qualified
+			name = name + "." + methodName
+		}
+		c.output.WriteCall(name, nargs)
+	case "(":
+		// We call a local method. It is not allowed to call functions without prefixing the class name.
+		c.consume("(")
+		nargs := 1 + c.compileExpressionList()
+		c.consume(")")
+		// Push pointer of this object, stored in arguments 0
+		c.output.WritePush(ArgumentVMSegment, 0)
+		c.output.WriteCall(name, nargs)
 	default:
 		panic("Expected terminal ( or ., but got " + c.nextToken().terminal)
 	}
@@ -459,7 +505,16 @@ func (c *JackCompiler) compileVarNameSubterm() error {
 
 	switch c.nextToken().terminal {
 	case "[":
-		c.compileArrayAccess(varName)
+		c.consume("[")
+
+		c.generateArrayElemPointer(varName)
+		// Address *varName + expr_result is now on top of stack
+		// Pop into pointer (THAT)
+		c.output.WritePop(PointerVMSegment, 1)
+		// Pop value onto stack
+		c.output.WritePop(ThatVMSegment, 0)
+
+		c.consume("]")
 	case "(", ".":
 		c.compileSubroutineCall(varName)
 	default:
@@ -497,8 +552,8 @@ func (c *JackCompiler) compileTerm() error {
 		case IsTerminal(token, "null"):
 			c.output.WritePush(ConstVMSegment, 0)
 		case IsTerminal(token, "this"):
-			// TODO Emit Code
-			panic("Not implemented!")
+			// Push "this" pointer onto stack
+			c.output.WritePush(PointerVMSegment, 0)
 		default:
 			return fmt.Errorf("unexpected keyword %q", token.terminal)
 		}
