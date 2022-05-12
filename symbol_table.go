@@ -53,7 +53,6 @@ func (s *SymbolTable) Declare(symbol Symbol, name string, scope Scope) Symbol {
 	case FunctionScope:
 		symbol = registerSymbol(&s.functionScopeTable, name, symbol)
 	}
-	fmt.Printf("Registered symbol %q: %q\n", name, symbol)
 	return symbol
 }
 
@@ -72,10 +71,10 @@ func (s *SymbolTable) Lookup(name string) (Symbol, error) {
 
 func (s *SymbolTable) Clear(scope Scope) {
 	switch scope {
-	case FunctionScope:
-		s.functionScopeTable = make(map[string]Symbol)
-		fallthrough
 	case ClassScope:
 		s.classScopeTable = make(map[string]Symbol)
+		fallthrough
+	case FunctionScope:
+		s.functionScopeTable = make(map[string]Symbol)
 	}
 }

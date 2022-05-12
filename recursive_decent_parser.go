@@ -6,11 +6,13 @@ import (
 	"strings"
 )
 
-var (
-	symbolTable  SymbolTable = NewSymbolTable()
-	lastVarTypes []string
-	lastVarKind  SymbolType
-	lastVarNames []string
+type SubroutineType string
+
+const (
+	InvalidSubroutineType     SubroutineType = ""
+	MethodSubroutineType      SubroutineType = "method"
+	FunctionSubroutineType    SubroutineType = "function"
+	ConstructorSubroutineType SubroutineType = "constructor"
 )
 
 type TokenScanner interface {
@@ -140,26 +142,27 @@ func (c *JackCompiler) compileClass() {
 	}
 	for c.compileSubroutineDec() == nil {
 	}
-	fmt.Printf("Done with compilation of class!\n")
-	// TODO EOF
-	c.consume("}")
+	// Return an error if the next terminal is not } or we are not at EOF
+	if c.nextToken().terminal != "}" || c.tokenScanner.Scan() {
+		panic("Unexpected end of class")
+	}
 }
 
 func (c *JackCompiler) compileClassVarDec() error {
 	switch token := c.nextToken(); {
 	case IsTerminal(token, "static"):
 		c.consume("static")
-		c.compileVarSequence(StaticSymbol)
+		c.compileVarSequence(StaticSymbol, ClassScope)
 	case IsTerminal(token, "field"):
 		c.consume("field")
-		c.compileVarSequence(FieldSymbol)
+		c.compileVarSequence(FieldSymbol, ClassScope)
 	default:
 		return fmt.Errorf("Expected \"static\" or \"field\" but got %s", token.terminal)
 	}
 	return nil
 }
 
-func (c *JackCompiler) compileVarSequence(symbolType SymbolType) (numDeclarations MachineWord) {
+func (c *JackCompiler) compileVarSequence(symbolType SymbolType, symbolScope Scope) (numDeclarations MachineWord) {
 	symbol := Symbol{symbolType: symbolType}
 
 	symbol.variableType, _ = parseType(c.nextToken())
@@ -172,7 +175,7 @@ func (c *JackCompiler) compileVarSequence(symbolType SymbolType) (numDeclaration
 		numDeclarations += 1
 
 		// Register types in symbol table
-		c.symbolTable.Declare(symbol, varName, ClassScope)
+		c.symbolTable.Declare(symbol, varName, symbolScope)
 		if IsTerminal(c.nextToken(), ",") {
 			c.consume(",")
 		} else {
@@ -186,20 +189,12 @@ func (c *JackCompiler) compileVarSequence(symbolType SymbolType) (numDeclaration
 func (c *JackCompiler) compileSubroutineDec() error {
 	c.symbolTable.Clear(FunctionScope)
 
-	isMethod := false
-	switch token := c.nextToken(); {
-	case IsTerminal(token, "function"):
-		// Nothing to do.
-	case IsTerminal(token, "constructor"):
-		// Get count of field variables
-		nfields := c.symbolTable.Count(FieldSymbol, ClassScope)
-		// Allocate this pointer
-		c.output.WritePush(ConstVMSegment, nfields)
-		c.output.WriteCall("Memory.alloc", 1)
-		// Set THIS pointer
-		c.output.WritePop(PointerVMSegment, 0)
-	case IsTerminal(token, "method"):
-		isMethod = true
+	methodType, err := parseSubroutineType(c.nextToken())
+	if err != nil {
+		return err
+	}
+
+	if methodType == MethodSubroutineType {
 		// Method will get an extra argument not captured in the parameter list.
 		thisSymbol := Symbol{
 			symbolType:   ArgumentSymbol,
@@ -207,11 +202,8 @@ func (c *JackCompiler) compileSubroutineDec() error {
 		}
 
 		c.symbolTable.Declare(thisSymbol, "this", FunctionScope)
-	default:
-		return fmt.Errorf("Expected \"method\", \"constructor\" or \"function\" but got %s", c.nextToken().terminal)
 	}
 
-	//returnType, _ := parseType(c.advance())
 	c.consume()
 	name, _ := parseIdentifier(c.advance())
 	c.consume() // Consume identfier
@@ -224,12 +216,12 @@ func (c *JackCompiler) compileSubroutineDec() error {
 
 	c.consume(")")
 
-	c.compileSubroutine(name, isMethod)
+	c.compileSubroutine(name, methodType)
 
 	return nil
 }
 
-func (c *JackCompiler) compileSubroutine(name string, isMethod bool) {
+func (c *JackCompiler) compileSubroutine(name string, subroutineType SubroutineType) {
 	c.consume("{")
 	nlocals := MachineWord(0)
 	for {
@@ -241,8 +233,18 @@ func (c *JackCompiler) compileSubroutine(name string, isMethod bool) {
 	}
 
 	c.writeFunction(name, nlocals)
-	// Setup this pointer if is method. We could also look up "this" in the symbol table instead
-	if isMethod {
+
+	switch subroutineType {
+	case ConstructorSubroutineType:
+		// Get count of field variables
+		nfields := c.symbolTable.Count(FieldSymbol, ClassScope)
+		// Allocate this pointer
+		c.output.WritePush(ConstVMSegment, nfields)
+		c.output.WriteCall("Memory.alloc", 1)
+		// Set THIS pointer
+		c.output.WritePop(PointerVMSegment, 0)
+	case MethodSubroutineType:
+		// Write output
 		c.output.WritePush(ArgumentVMSegment, 0)
 		c.output.WritePop(PointerVMSegment, 0)
 	}
@@ -275,7 +277,7 @@ func (c *JackCompiler) compileVarDec() MachineWord {
 		return 0
 	}
 	c.consume("var")
-	return c.compileVarSequence(VarSymbol)
+	return c.compileVarSequence(VarSymbol, FunctionScope)
 }
 
 func (c *JackCompiler) compileStatements() {
@@ -335,8 +337,8 @@ func (c *JackCompiler) compileLet() {
 		c.output.WritePop(PointerVMSegment, 1)
 		// Restore rhs rexpression result from temp
 		c.output.WritePush(TempVMSegment, 0)
-		// Push into destination
-		c.output.WritePush(ThatVMSegment, 0)
+		// Pop into destination
+		c.output.WritePop(ThatVMSegment, 0)
 	} else {
 		segment, index := c.generateVariableAccess(varName)
 		c.output.WritePop(segment, index)
@@ -464,31 +466,35 @@ func (c *JackCompiler) compileSubroutineCall(name string) {
 		// Advance over identifier
 		c.advance()
 
-		c.consume("(")
-		nargs := c.compileExpressionList()
-		c.consume(")")
-
+		nargs := MachineWord(0)
 		// Check if name is a symbol! If it is, push the object on the stack
-		if _, err := c.symbolTable.Lookup(name); err == nil {
+		if symbol, err := c.symbolTable.Lookup(name); err == nil {
 			nargs += 1 // Account for this pointer
 
 			// Push the address of the object a method is called on onto the stack.
 			// This will be argument 0 (this pointer)
 			segment, index := c.generateVariableAccess(name)
 			c.output.WritePush(segment, index)
+
+			name = symbol.variableType + "." + methodName
 		} else {
 			// Name refers to some function. Needs to be fully qualified
 			name = name + "." + methodName
 		}
+
+		c.consume("(")
+		nargs += c.compileExpressionList()
+		c.consume(")")
+
 		c.output.WriteCall(name, nargs)
 	case "(":
+		// Push pointer of this object
+		c.output.WritePush(PointerVMSegment, 0)
 		// We call a local method. It is not allowed to call functions without prefixing the class name.
 		c.consume("(")
 		nargs := 1 + c.compileExpressionList()
 		c.consume(")")
-		// Push pointer of this object, stored in arguments 0
-		c.output.WritePush(ArgumentVMSegment, 0)
-		c.output.WriteCall(name, nargs)
+		c.output.WriteCall(c.currentClassName+"."+name, nargs)
 	default:
 		panic("Expected terminal ( or ., but got " + c.nextToken().terminal)
 	}
@@ -511,8 +517,8 @@ func (c *JackCompiler) compileVarNameSubterm() error {
 		// Address *varName + expr_result is now on top of stack
 		// Pop into pointer (THAT)
 		c.output.WritePop(PointerVMSegment, 1)
-		// Pop value onto stack
-		c.output.WritePop(ThatVMSegment, 0)
+		// Push value onto stack
+		c.output.WritePush(ThatVMSegment, 0)
 
 		c.consume("]")
 	case "(", ".":
@@ -542,6 +548,9 @@ func (c *JackCompiler) compileTerm() error {
 		return nil
 	case IsTokenType(token, StringConstant):
 		c.output.WriteStringConstant(token.terminal)
+		// Consume string constant
+		c.advance()
+		return nil
 	case IsTokenType(token, Keyword):
 		switch {
 		case IsTerminal(token, "true"):
@@ -659,6 +668,16 @@ func parseStringConstant(token Token) (string, error) {
 		return "", fmt.Errorf("invalid string constant %q", token.terminal)
 	}
 	return token.terminal, nil
+}
+
+func parseSubroutineType(token Token) (s SubroutineType, err error) {
+	switch {
+	case IsTerminal(token, "function", "constructor", "method"):
+		s = SubroutineType(token.terminal)
+	default:
+		err = fmt.Errorf("Expected \"method\", \"constructor\" or \"function\" but got %s", token.terminal)
+	}
+	return
 }
 
 func formatXML(tag string, content string) string {

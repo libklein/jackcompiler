@@ -69,8 +69,7 @@ func main() {
 			fmt.Printf("Could not open file %q: %v\n", file, err)
 			return
 		}
-		// TODO
-		//defer handle.Close()
+		defer handle.Close()
 
 		//dumpTokens(handle)
 		//handle.Seek(0, 0)
@@ -81,8 +80,7 @@ func main() {
 		if err != nil {
 			fmt.Printf("Could not generate assembly file %q: %v\n", outputPath, err)
 		}
-		// TODO
-		//defer output.Close()
+		defer output.Close()
 
 		// Translate
 		compileFile(handle, output)

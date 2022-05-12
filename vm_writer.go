@@ -60,12 +60,21 @@ func (w *VMWriter) WritePop(segment VMSegmentType, index MachineWord) {
 
 func (w *VMWriter) WriteStringConstant(constant string) {
 	w.WritePush(ConstVMSegment, MachineWord(len(constant)))
-	// TODO Cannot call String.new, allocate memory instead (see )
-	w.WriteCall("String.new", 2)
+	w.WriteCall("String.new", 1)
+	// Store allocated string pointer in temp segment
+	w.WritePop(TempVMSegment, 0)
 	for _, c := range constant {
+		// Push stored pointer to object
+		w.WritePush(TempVMSegment, 0)
+		// Push the character
 		w.WritePush(ConstVMSegment, MachineWord(c))
+		// Append another character
 		w.WriteCall("String.appendChar", 2)
+		// Remove 0 return value
+		w.WritePop(TempVMSegment, 1)
 	}
+	// Leave pointer to string constant on top of stack
+	w.WritePush(TempVMSegment, 0)
 }
 
 func (w *VMWriter) WriteArithmetic(operation VMOperation) {

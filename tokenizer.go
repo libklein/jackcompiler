@@ -181,6 +181,13 @@ func splitToken(data []byte, atEOF bool) (advance int, token []byte, err error) 
 	matchBegin := matchIndex[0]
 	matchEnd := matchIndex[1]
 
+	if matchEnd == len(dataString) && !atEOF {
+		// Could possibly match a longer slice. -> Try to read more
+		advance = 0
+		token = nil
+		return
+	}
+
 	advance = matchEnd + (len(data) - len(dataString))
 	token = []byte(dataString[matchBegin:matchEnd])
 
@@ -189,6 +196,7 @@ func splitToken(data []byte, atEOF bool) (advance int, token []byte, err error) 
 
 func parseToken(tokenString string) (token Token, err error) {
 	var regexMatch []int
+
 	regexMatch, err = matchToken(tokenString)
 	if err != nil {
 		return
