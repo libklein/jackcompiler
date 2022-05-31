@@ -1,23 +1,24 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 )
 
-func getClassName(filePath string) string {
-	basename := filepath.Base(filePath)
-	return basename[:len(basename)-5]
+func removeExtension(filePath string) string {
+	extension := filepath.Ext(filePath)
+	return filePath[:len(filePath)-len(extension)]
 }
 
-func dumpTokens(r io.Reader) {
-	tokenizer := NewTokenizer(r)
-	for tokenizer.Scan() {
-		token := tokenizer.Token()
-		fmt.Println(token)
-	}
+func getClassName(filePath string) string {
+	return removeExtension(filepath.Base(filePath))
+}
+
+func getOutputPath(filePath string) string {
+	return removeExtension(filePath) + ".vm"
 }
 
 func compileFile(r io.Reader, w io.Writer) {
@@ -28,27 +29,42 @@ func compileFile(r io.Reader, w io.Writer) {
 	compiler.Compile()
 }
 
-func main() {
-	if len(os.Args) != 2 {
-		fmt.Printf("Usage: %s filename.jack\n", os.Args[0])
+func processFile(path string) (outputPath string, err error) {
+	// Open file for reading
+	handle, openErr := os.Open(path)
+	if openErr != nil {
+		return "", fmt.Errorf("Could not open file %q for reading: %v", path, err)
+	}
+	defer handle.Close()
+
+	// Open file for writing
+	outputPath = getOutputPath(path)
+	output, openErr := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return outputPath, fmt.Errorf("Could not open output file %q for writing: %v", outputPath, err)
+	}
+	defer output.Close()
+
+	// Translate
+	compileFile(handle, output)
+
+	return outputPath, nil
+}
+
+func collectFiles(fileOrDir string) (files []string, err error) {
+
+	fileOrDirStat, err := os.Stat(fileOrDir)
+	if err != nil {
+		err = fmt.Errorf("Cannot stat file/dir %q\n", fileOrDir)
 		return
 	}
 
-	fileOrDir := os.Args[1]
-	fileOrDirStat, err := os.Stat(fileOrDir)
-	if err != nil {
-		fmt.Printf("Cannot stat file/dir %q\n", fileOrDir)
-	}
-
-	var (
-		files []string
-		//outputPath string
-	)
-
+	// Collect files
 	if fileOrDirStat.IsDir() {
-		dirEntrys, err := os.ReadDir(fileOrDir)
-		if err != nil {
-			fmt.Printf("Could not open directory %q!\n", fileOrDir)
+		dirEntrys, readDirErr := os.ReadDir(fileOrDir)
+		if readDirErr != nil {
+			err = fmt.Errorf("Could not open directory %q!\n", fileOrDir)
+			return
 		}
 
 		for _, dir := range dirEntrys {
@@ -57,35 +73,34 @@ func main() {
 	} else {
 		files = []string{fileOrDir}
 	}
+	return
+}
+
+func main() {
+	filename := flag.String("d", "", ".jack file to compile or directory containing .jack files")
+
+	flag.Parse()
+
+	if *filename == "" {
+		flag.Usage()
+		return
+	}
+
+	files, err := collectFiles(*filename)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 
 	for _, file := range files {
 		if filepath.Ext(file) != ".jack" {
 			continue
 		}
-
-		// Open file for reading
-		handle, err := os.Open(file)
+		fmt.Printf("Compiling file %q\n", file)
+		outputPath, err := processFile(file)
 		if err != nil {
-			fmt.Printf("Could not open file %q: %v\n", file, err)
-			return
+			fmt.Printf("Failed to compile %q: %s\n", file, err)
 		}
-		defer handle.Close()
-
-		//dumpTokens(handle)
-		//handle.Seek(0, 0)
-
-		// Open file for writing
-		outputPath := file[:len(file)-5] + ".vm"
-		output, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-		if err != nil {
-			fmt.Printf("Could not generate assembly file %q: %v\n", outputPath, err)
-		}
-		defer output.Close()
-
-		// Translate
-		compileFile(handle, output)
-		/*if err != nil {
-			fmt.Printf("Failed to compile file %q: %v\n", file, err)
-		}*/
+		fmt.Printf("Saved as %q\n", outputPath)
 	}
 }

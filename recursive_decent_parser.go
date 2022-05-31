@@ -125,7 +125,6 @@ func (c *JackCompiler) Compile() {
 }
 
 func (c *JackCompiler) compileClass() {
-	// TODO Emit code
 	c.consume("class")
 
 	c.symbolTable.Clear(ClassScope)
